@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import shlex
+
 from hyperresearch.core.hooks import (
     _RETIRED_AGENT_FILES,
     _RETIRED_SKILL_DIRS,
+    _install_claude_hook,
     _install_depth_critic_agent,
     _install_depth_investigator_agent,
     _install_dialectic_critic_agent,
@@ -325,7 +329,12 @@ def test_prune_retired_agents_removes_old_files(tmp_vault):
     for name in _RETIRED_SKILL_DIRS:
         retired_skill = skills_dir / name
         retired_skill.mkdir(parents=True, exist_ok=True)
-        (retired_skill / "SKILL.md").write_text("old skill\n", encoding="utf-8")
+        # What we actually shipped into these dirs: the entry skill, renamed.
+        # Every version of it named the project in its body.
+        (retired_skill / "SKILL.md").write_text(
+            f"---\nname: {name}\n---\n\n# Deep research\n\nRun the hyperresearch pipeline.\n",
+            encoding="utf-8",
+        )
 
     result = _prune_retired_agents(tmp_vault.root)
     assert result is not None
@@ -341,6 +350,41 @@ def test_prune_retired_agents_noop_on_clean_vault(tmp_vault):
     """On a fresh vault, prune is a no-op."""
     result = _prune_retired_agents(tmp_vault.root)
     assert result is None
+
+
+def test_prune_retired_agents_spares_a_users_own_research_skill(tmp_vault):
+    """`research` is an obvious name for a hand-written personal skill, and on a
+    --global install the prune runs against ~/.claude/skills/. Deleting on name
+    alone destroyed user content that was never ours (#73)."""
+    skills_dir = tmp_vault.root / ".claude" / "skills"
+    mine = skills_dir / "research"
+    mine.mkdir(parents=True, exist_ok=True)
+    (mine / "SKILL.md").write_text(
+        "---\nname: research\ndescription: My own literature workflow\n---\n\nStep 1...\n",
+        encoding="utf-8",
+    )
+    (mine / "reference.md").write_text("notes I wrote\n", encoding="utf-8")
+
+    result = _prune_retired_agents(tmp_vault.root)
+
+    assert (mine / "SKILL.md").read_text(encoding="utf-8").startswith("---\nname: research")
+    assert (mine / "reference.md").exists()
+    # And the user is told it was left behind, rather than it happening silently.
+    assert result is not None
+    assert "Left alone (not ours)" in result
+    assert ".claude/skills/research" in result
+
+
+def test_prune_retired_agents_spares_a_dir_with_no_skill_file(tmp_vault):
+    """No SKILL.md means we have no evidence it was ever ours, so leave it."""
+    skills_dir = tmp_vault.root / ".claude" / "skills"
+    mine = skills_dir / "research"
+    mine.mkdir(parents=True, exist_ok=True)
+    (mine / "scratch.txt").write_text("something\n", encoding="utf-8")
+
+    _prune_retired_agents(tmp_vault.root)
+
+    assert (mine / "scratch.txt").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -395,3 +439,25 @@ def test_install_hooks_second_run_is_noop(tmp_vault):
     # Hook installer may still report the hook is already installed → no
     # actions or a trivial subset. Must not crash, must not reinstall files.
     assert not second or all("pruned" not in a.lower() for a in second)
+
+
+# ---------------------------------------------------------------------------
+# The registered command must survive the shell that runs it
+# ---------------------------------------------------------------------------
+
+
+def test_installed_hook_command_keeps_the_script_path_in_one_argument(tmp_path):
+    """Claude Code runs a hook command through a shell, so an unquoted path is
+    split at its first space and node receives a truncated script path. Project
+    directories with spaces are ordinary — a Windows user directory, or anything
+    under "My Documents" — and the hook then fails on every matching tool call
+    without the reminder ever appearing."""
+    project = tmp_path / "my project"
+    project.mkdir()
+
+    _install_claude_hook(project, "hyperresearch")
+
+    settings = json.loads((project / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    command = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+
+    assert shlex.split(command) == ["node", (project / ".hyperresearch" / "hook.js").as_posix()]

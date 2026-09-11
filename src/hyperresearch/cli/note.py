@@ -191,6 +191,29 @@ def note_show(
             "word_count": row["word_count"], "source": row["source"],
             "parent": row["parent"], "summary": row["summary"],
         }
+        # Open-access substitution. Surfaced structurally, not just as the
+        # banner in the body, so a reader checking a quotation can tell it is
+        # looking at a preprint without having to parse prose. `source` above
+        # is still the URL that was requested; `oa_url` is where the body came
+        # from. See core/oa.py.
+        if "oa_url" in row.keys() and row["oa_url"]:  # noqa: SIM118
+            kind = (
+                row["oa_recovery_kind"]
+                if "oa_recovery_kind" in row.keys()  # noqa: SIM118
+                else None
+            )
+            data["oa"] = {
+                "url": row["oa_url"],
+                "resolver": row["oa_source"],
+                "version": row["oa_version"],
+                "license": row["oa_license"],
+                "body_is_not_from_source": True,
+                # "rescued" is the stronger claim: the source URL was never
+                # read, so the title and authors are the open-access copy's
+                # too. "substituted" means only the body was replaced.
+                "kind": kind,
+                "nothing_from_source": kind == "rescued",
+            }
         if not meta:
             body = row["body"]
             from hyperresearch.core.untrusted import is_untrusted, wrap_body
@@ -418,9 +441,19 @@ def note_update(
     from hyperresearch.core.frontmatter import parse_frontmatter, serialize_frontmatter
     from hyperresearch.core.sync import compute_sync_plan, execute_sync
     from hyperresearch.core.vault import Vault
-    from hyperresearch.models.note import ContentType, Tier
+    from hyperresearch.models.note import ContentType, NoteStatus, Tier
 
     # Validate enums up-front
+    if set_status is not None:
+        try:
+            NoteStatus(set_status)
+        except ValueError:
+            valid = ", ".join(s.value for s in NoteStatus)
+            if json_output:
+                output(error(f"Invalid --status '{set_status}'. Must be one of: {valid}", "INVALID_STATUS"), json_mode=True)
+            else:
+                console.print(f"[red]Invalid --status '{set_status}'.[/] Must be one of: {valid}")
+            raise typer.Exit(1)
     if set_tier is not None:
         try:
             Tier(set_tier)

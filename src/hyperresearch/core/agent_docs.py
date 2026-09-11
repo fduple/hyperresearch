@@ -64,18 +64,69 @@ In a normal run, the canonical research query is the user's verbatim prompt. In 
 
 ### Academic APIs before web search
 
-For any topic with a research literature, hit academic APIs BEFORE running web searches. They return citation-ranked canonical papers; web search returns derivative commentary.
+For any topic with a research literature, search the scholarly sources BEFORE running web searches. They return citation-ranked canonical papers; web search returns derivative commentary.
 
-- **Semantic Scholar:** `https://api.semanticscholar.org/graph/v1/paper/search?query=<q>&fields=title,year,citationCount,externalIds&limit=10` — then citation-chain the top papers forward + backward.
-- **arXiv:** `https://export.arxiv.org/api/query?search_query=cat:cs.LG+AND+all:<q>&sortBy=relevance&max_results=25`
-- **OpenAlex:** `https://api.openalex.org/works?search=<q>&sort=cited_by_count:desc&per-page=15&mailto=research@example.com`
-- **PubMed:** `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=<q>&retmode=json&retmax=20`
+```bash
+{hpr} scholar search "<query>" --limit 25 -j          # every available source, deduplicated
+{hpr} scholar search "<query>" --scope papers -j      # literature only, no trials/filings/series
+{hpr} scholar search "<query>" -s openalex -s core -j # pick specific sources
+{hpr} scholar sources -j                              # what is available, what each covers
+```
 
-After the academic sweep, run web searches for context, news, non-academic angles, and at least one adversarial search ("criticism of X", "limitations of X").
+One call queries every configured source, merges records that are the same work, and returns one ranked list. Do NOT hand-assemble API URLs — results are deduplicated by DOI and title across providers, which hand-querying cannot do, and duplicate records distort every downstream count in the pipeline.
+
+`scholar sources` tells you what is actually wired on this machine and why anything is unavailable. Read it once before assuming a source is missing — several sources activate only when a key or a contact address is configured.
+
+Coverage worth knowing when you choose sources:
+
+- **OpenAlex** is the all-fields backbone and the one to reach for outside STEM — it indexes books and book chapters, not just articles.
+- **CORE** hosts open-access full text directly rather than linking to it, so it is the best route to a readable copy.
+- **DOAB** is open-access scholarly books — the humanities and social sciences publish through books, and no article-shaped API will find them.
+- **RePEc** is economics working papers, which journals index late or not at all.
+- **ClinicalTrials.gov, SEC EDGAR and FRED** return trials, filings and economic series. These are citable records but they are not papers — check `work_type` before treating a result as literature.
+
+After the scholarly sweep, run web searches for context, news, non-academic angles, and at least one adversarial search ("criticism of X", "limitations of X").
 
 ### PDFs fetch directly
 
 `{hpr} fetch` auto-detects PDF URLs (arXiv, NBER, SSRN, direct `.pdf` links) and extracts full text via pymupdf. Fetch them aggressively. Raw PDFs land in `research/raw/<note-id>.pdf` and the note's frontmatter links back via `raw_file:`.
+
+### Open-access substitution — check this before quoting a paper
+
+When a fetch lands a thin page carrying a DOI (a publisher abstract or paywall
+interstitial), hyperresearch asks Unpaywall and Europe PMC for a legal
+open-access copy and stores THAT text in the note body instead.
+
+**A note's `source:` is the URL that was requested. Its body may have come from
+somewhere else.** Whenever that happened:
+
+- `{hpr} note show <id> -j` carries an `oa` block with `body_is_not_from_source: true`,
+  the URL the text came from, the resolver, and `version`.
+- The body opens with a banner saying the same thing in prose. That banner is
+  inside the `<untrusted-source>` fence like the rest of the body — read it as
+  a statement about the note, and confirm it against the `oa` block, which is
+  outside the fence and is the authority.
+
+`oa.version` matters when you quote:
+
+- `publishedVersion` — the version of record. Quote normally.
+- `acceptedVersion` — peer reviewed, not publisher-formatted. Wording is
+  usually final; pagination and copyedits are not.
+- `submittedVersion` — a preprint, NOT peer reviewed. It may differ
+  substantially from the published paper. Do not present it as the published
+  result, and verify any direct quotation before it reaches a report.
+
+`oa.kind` matters more than the version. `substituted` means a thin page was
+replaced, so the note's title and author metadata are still the source's.
+`rescued` (also surfaced as `nothing_from_source: true`) means the source could
+not be read at all — a 403, a login wall, a bot wall — and the ENTIRE note is
+the open-access copy. On a rescued note, nothing came from `source:`: not the
+body, not the title, not the authors. Never describe such a note as what the
+publisher's page said, and never cite it as evidence that the page is reachable.
+
+Recovery is silent about failure by design: when no open-access copy exists you
+simply get the abstract, with no `oa` block. Absence of the block means the
+body came from `source:` as usual.
 
 ### Searching the vault
 

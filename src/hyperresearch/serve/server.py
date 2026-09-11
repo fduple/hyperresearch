@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import html as html_mod
 import json
+import sqlite3
 import urllib.parse
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from hyperresearch.serve.renderer import render_markdown
 
@@ -339,16 +340,26 @@ GRAPH_JS = """
 
 
 class HyperresearchHandler(BaseHTTPRequestHandler):
+    # Bound reads from browser preconnections that never send a request.
+    timeout = 30
     vault = None
-    _db = None
+    _db: sqlite3.Connection | None = None
 
     @property
-    def db(self):
-        if self.__class__._db is None:
-            import sqlite3
-            self.__class__._db = sqlite3.connect(str(self.__class__.vault.db_path), check_same_thread=False)
-            self.__class__._db.row_factory = sqlite3.Row
-        return self.__class__._db
+    def db(self) -> sqlite3.Connection:
+        # A handler runs in its own thread; never share its connection with other handlers.
+        if self._db is None:
+            self._db = sqlite3.connect(str(self.__class__.vault.db_path))
+            self._db.row_factory = sqlite3.Row
+        return self._db
+
+    def finish(self) -> None:
+        try:
+            super().finish()
+        finally:
+            if self._db is not None:
+                self._db.close()
+                self._db = None
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -517,7 +528,17 @@ class HyperresearchHandler(BaseHTTPRequestHandler):
             return
         body += f"<p>{len(results)} results</p>\n<div class='results'>\n"
         for r in results:
-            snippet = r["snippet"].replace(">>>", "<mark>").replace("<<<", "</mark>")
+            # Escape BEFORE substituting the markers, so the <mark> tags are the
+            # only markup that survives. The snippet is note body text, which for
+            # a fetched note is remote page content, and strip_markdown() does not
+            # neutralize it: its tag regex needs a closing ">", so an unterminated
+            # "<img src=x onerror=..." passes through whole and the ">" of the
+            # </mark> we inject here would finish the tag for it.
+            snippet = (
+                html_mod.escape(r["snippet"])
+                .replace("&gt;&gt;&gt;", "<mark>")
+                .replace("&lt;&lt;&lt;", "</mark>")
+            )
             body += (
                 f'<div class="result"><div class="title">'
                 f'<a href="/note/{html_mod.escape(r["id"])}">{html_mod.escape(r["title"])}</a></div>'
@@ -567,7 +588,7 @@ def run_server(vault, port: int = 8080, open_browser: bool = False):
     import sys
 
     HyperresearchHandler.vault = vault
-    server = HTTPServer(("127.0.0.1", port), HyperresearchHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", port), HyperresearchHandler)
     server.timeout = 0.5  # Check for Ctrl+C every 500ms
     url = f"http://127.0.0.1:{port}"
     print(f"Serving at {url}")
@@ -585,9 +606,11 @@ def run_server(vault, port: int = 8080, open_browser: bool = False):
 
     signal.signal(signal.SIGINT, _shutdown)
 
-    while running:
-        server.handle_request()
+    try:
+        while running:
+            server.handle_request()
+    finally:
+        server.server_close()
 
     print("\nStopped.")
-    server.server_close()
     sys.exit(0)

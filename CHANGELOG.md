@@ -9,6 +9,97 @@
 - **Response-size caps**, streamed and enforced mid-body so a lying or chunked server cannot exhaust memory. Configurable via new `[fetch]` settings `max_html_bytes` (10 MiB), `max_pdf_bytes` (25 MiB), `max_image_bytes` (2 MiB). A gate refusal on an image download is printed, not silently swallowed.
 - **No unverified-TLS retry.** A certificate failure on a PDF fetch is a refusal that names the existing `pdf_verify_tls = false` opt-out — never an automatic verify-off retry, which a MITM could force with a bad cert. The refusal is its own exception type (`CertVerificationError`), and a cert-refused PDF is never handed to the browser fallback lane: that lane runs with TLS errors ignored, so "falling back" there would be the automatic unverified retry by another name. In a batch it is a loud skip instead.
 
+### Scholarly discovery: eight sources through one client layer
+
+Academic discovery used to be four URL templates rendered into the agent's instructions by `core/agent_docs.py`, which the model was trusted to assemble and call by hand. No retry, no rate limiting, no dedup, no offline tests — and one of those templates shipped `mailto=research@example.com`, a shared placeholder on every install, which is exactly the anti-pattern the open-access resolver refuses to commit for Unpaywall. It is now a real package.
+
+- **`hpr scholar search` and `hpr scholar sources`.** One query hits every configured provider, merges records that are the same work, and returns one list. `sources` lists what is wired, what each covers, and why anything is unavailable — so a user is never guessing which source to reach for.
+- **Dedup is by DOI first, then normalized title within ±1 year.** The year tolerance is deliberate: providers disagree systematically about online-first versus print year for the same article. Two *different* DOIs never merge regardless of title, which is what stops four 2025 reprints of a famous paper from collapsing into one record. A work confirmed by several providers carries them in `also_in`, with the highest citation count and the longest abstract.
+- **`--limit` is per provider, not a cap on the merged list.** A post-merge cap would show only the first provider's records at small limits and make every other source look empty.
+- **Providers: OpenAlex, Crossref, CORE, DOAB, ClinicalTrials.gov, SEC EDGAR, FRED.** Each is a real client through one cache-first, rate-limited HTTP seam (`scholar/base.py`), with fixtures matching live response shapes. OpenAlex's abstracts arrive as an inverted word-position index and are reconstructed; Crossref's arrive as JATS XML and are stripped; ClinicalTrials.gov and EDGAR were verified against the live services, including EDGAR's User-Agent gate.
+- **Non-STEM coverage is a first-class goal.** OpenAlex and DOAB return books and book chapters, which matters because in the humanities the book is the unit of publication and nothing in the stack could find one before. DOAB is the only source that finds *the book* rather than a review of it.
+- **RePEc is listed as unavailable, on purpose.** Their API documents that it has no search function. Shipping an honest "cannot search" with a pointer to OpenAlex for the DOI-bearing series beats silently omitting the field.
+- **`HYPERRESEARCH_CONTACT_EMAIL` replaces the placeholder.** Set it and OpenAlex and Crossref serve you from their polite pools, and SEC EDGAR — which rejects any request without a contact address — becomes available. Unset, no address is sent at all.
+- **Specialist records are tagged, not disguised.** Trials, filings and economic series come back with `work_type` set so the pipeline never treats a 10-K as a paper.
+- **`FRED_API_KEY` is never cached.** FRED authenticates by query parameter and the cache keys on URL, so FRED requests bypass the cache rather than write the key into the vault's SQLite in plaintext.
+
+### CORE is the third open-access resolver
+
+Recovery used to ask Unpaywall, then Europe PMC. But `contact_email` is empty by default, which disables Unpaywall, and Europe PMC is biomedical only — so a stock install's open-access recovery covered almost nothing outside biomedicine while the 0.10.0 notes presented it as a headline feature. [CORE](https://core.ac.uk/) now runs third: it is the largest full-text open-access aggregator, and unlike Unpaywall it hosts the plain text directly rather than pointing at a repository that may 403.
+
+- Activates when `CORE_API_KEY` is set; skipped silently otherwise, the same way Unpaywall is skipped without a contact address.
+- Every existing invariant holds and is tested: a candidate is accepted only if it is longer than what we had and clears `oa_min_full_text_chars`; failure is soft; resolver URLs go through `check_oa_url`; `oa_max_attempts` is honoured; the four-place disclosure contract is populated; `oa_source` gains the value `core`.
+- **Version is recorded honestly.** CORE does not reliably say which version it holds, so `oa_version` stays unset unless CORE marks the record a preprint — and the banner then says the version is unrecorded and tells the reader to quote with care, rather than implying version of record.
+
+### Agent prose now points at the client
+
+The "Academic APIs before web search" section of the injected agent instructions tells agents to run `hpr scholar search` and not to hand-assemble API URLs, and explains what each source is for.
+
+## [0.10.1] - 2026-09-11
+
+A maintenance release. Everything here is a contributed fix, and two of them unblock users who could not ship a run at all.
+
+- **The `length-in-range` verify gate no longer measures CJK reports with a Latin-script ruler (#71, fixed by @tetra4rnav in #64).** `verify_run` counted whitespace-separated tokens, which in Japanese or Chinese counts almost nothing — a correctly-sized report measured roughly 20x short and `run finish` hard-blocked it, with no honest way past the gate. Length is now measured in characters when whitespace doesn't segment the text, against a new `char_targets_no_word_boundary` profile field. Detection is by average token length rather than Unicode range, which matters: Hangul *is* space-delimited, and a range-based check would have broken Korean while fixing Japanese. This shipped to `main` three days after the 0.10.0 tag and has been sitting unreleased since.
+
+- **`hpr serve` no longer hangs on an idle browser connection (#87, reported by @muppavv, fixed by @maximilliangrand in #96).** The viewer ran a single-threaded `HTTPServer` whose handler set no read timeout, so one socket that connected and sent nothing starved every other client — and Chrome opens exactly such a preconnect socket, which meant the first page load with `--open` could poison the server. The symptom was indistinguishable from a hang: no error, no CPU. Now `ThreadingHTTPServer` with a handler read timeout. The shared SQLite connection that made threading unsafe was correctly retired at the same time, rather than papered over with a lock.
+
+- **An invalid `--status` is rejected instead of silently corrupting a note (@MarceloSenai in #89).** `NoteMeta` had no `validate_assignment`, so `note update --status evergreeen` wrote the typo straight to frontmatter. The note then failed validation on the next sync, dropped out of the index, and `note list` kept serving the stale row — every later edit to that note going unindexed too. The valid set is read from the `NoteStatus` enum rather than a hand-maintained list, so it can't drift.
+
+- **"Purchase this article" is recognised as a paywall (@MarceloSenai in #91).** The phrase list had "buy this article" and "purchase pdf" but not this one, so those interstitials passed as full text and open-access recovery never ran — the note kept an abstract while the report cited it as though the paper had been read. The gate's own comment used this exact phrase as its worked example.
+
+- **The registered PreToolUse hook command quotes the script path (@dajiaohuang in #98).** `install` wrote `node <path>` into `.claude/settings.json` unquoted, and a hook command runs through a shell — so a project directory containing a space split the path there and node was handed a truncated script, making the hook exit 1 on every `Glob`, `Grep`, `WebSearch` and `WebFetch` call. Paths with spaces are ordinary (a Windows user directory, anything under `My Documents`). Installs written before this change keep the old entry, because the installer treats any existing hyperresearch hook as already installed; removing that entry and re-running `install` picks up the fix.
+
+## [0.10.0] - 2026-08-01
+
+### Open-access full-text recovery (Unpaywall + Europe PMC)
+
+A paywalled paper used to enter the vault as an abstract. `extract_doi` stamped the DOI, the junk gate passed the landing page (an abstract is not junk), and depth investigators then reasoned over ~1,500 characters while the report cited the work as though the paper had been read.
+
+- **Thin DOI-bearing fetches now look for a legal open-access copy.** `core/oa.py` asks Unpaywall, then Europe PMC, and stores the recovered full text in the note body. Wired into both `hpr fetch` and `hpr fetch-batch` — the batch path writes its own notes and previously never even captured a DOI, so it now does that too.
+- **The substitution is disclosed in four places**, because a note whose body did not come from its `source:` is a trap otherwise: a banner at the top of the body, `oa_url` / `oa_source` / `oa_version` / `oa_license` frontmatter, an `oa` block in `note show -j` carrying `body_is_not_from_source: true`, and a line in the fetch output. The `oa` block sits outside the `<untrusted-source>` fence and is the authority.
+- **Version honesty.** Unpaywall returns accepted manuscripts and preprints when no published copy is open. The resolver prefers the version of record, records what it actually got, and the body banner tells the reader to check quotations against the published paper when it isn't one.
+- **Opt-in for Unpaywall, zero-config for Europe PMC.** `[scholar] contact_email` is empty by default, which skips Unpaywall entirely — their terms require a real address, and a shared placeholder shipped to every install would get that placeholder rate-limited for everyone. Europe PMC needs no key, so recovery over its open-access subset works out of the box. `oa_recovery = false` turns the whole thing off.
+- **Candidate fallback, not one shot.** Publishers 403 their own open-access PDFs often enough that a single attempt loses papers sitting in a repository two candidates down — verified against live DOIs. The resolver now yields an ordered candidate list (every Unpaywall PDF, then landing pages, then Europe PMC) and tries up to `oa_max_attempts` of them. Europe PMC resolves lazily, so the extra API call only happens when Unpaywall is exhausted.
+- **Europe PMC full text arrives as JATS, not PDF.** `/fullTextPDF` 404s; `/fullTextXML` is the documented route, and its structured markup parses better than pymupdf on a two-column PDF anyway. The converter keeps title, abstract, and body with section hierarchy, drops back matter, and preserves the tail text after dropped inline elements — losing an `<xref>`'s tail silently truncates a sentence after every citation marker.
+- **Failure is always soft, and quality can only go up.** A lookup that errors, a URL that fails the safety check, or a PDF that extracts badly leaves the original untouched. A candidate is accepted only if it is both longer than what we already had *and* long enough to clear `oa_min_full_text_chars` — the second bar stops a repository record page from passing for full text on the strength of being slightly longer than an abstract.
+- **Resolver-supplied URLs are treated as hostile input.** They arrive inside a third-party API response, so a poisoned DOI record could otherwise steer the fetcher at internal hosts. `check_oa_url` enforces http(s), no embedded credentials, and publicly-routable resolution. This duplicates the intent of `web/safe_http.check_url` (PR #53) and should collapse into it once that lands.
+- **Blocked sources are rescued too.** A fetch that could not be read at all — a 403, a login wall, a bot wall — used to abort long before recovery ran, which meant the feature was absent from exactly the case where a paper is most completely lost and an open-access copy is most likely to exist. All three of those exits now attempt a rescue first. On a default `builtin` install this was the common case, and invisible on a crawl4ai one: `doi.org/10.1093/nar/gkw1099` went from a hard 403 with no note to a 39,609-character note. Rescue only ever turns a failure into a note; a blocked source with no open-access copy fails exactly as before.
+- **A rescued note is marked as a stronger claim than a substitution**, because it is one: nothing in it came from `source:`, not the body, not the title, not the authors. `oa_recovery_kind: rescued` in frontmatter, `kind` + `nothing_from_source` in `note show -j` and the fetch output, and a banner that says the source URL was never read. `oa_rescue_blocked = false` disables the path for anyone who would rather have no note than a note assembled entirely from a substitute. A rescued source is not queued for browser escalation — the paper is already in hand.
+- **Rescue needs a DOI and there is no page to read one out of**, so it fires only when the DOI is in the URL (a `doi.org` link) or in a wall page's `citation_doi` meta tag. A wall page's body text is never trusted for a DOI. This limit is documented rather than papered over.
+- **Schema v11** adds the four `oa_*` columns and **v12** adds `oa_recovery_kind`, both additive and idempotent. Two versions rather than one: v11 is idempotent by column name, so a database already stamped v11 would have skipped a late-added fifth column forever. Existing notes keep NULLs — there is no way to know after the fact whether an old note's body came from its source URL.
+- **Config files are now written as UTF-8 explicitly.** `VaultConfig.save` took the platform default, so on Windows a single non-ASCII character in any comment or value produced a `config.toml` that `VaultConfig.load` — which reads it as UTF-8, per the TOML spec — could not parse. Latent until this branch's comments happened to be the first non-ASCII bytes in the file.
+
+### Two safety fixes in the viewer and the installer
+
+- **Stored XSS in `hpr serve` (#72, reported by @letospace).** `_serve_search` escaped every interpolated value except the FTS snippet, and the snippet is note body text — remote page content, for a fetched note. `strip_markdown` was not a defense: its tag regex needs a closing `>`, so an unterminated `<img src=x onerror=...` passed into `body_plain` intact, and the `>` of the `</mark>` the search page injects finished the tag. The snippet is escaped before the markers are substituted now, so the `<mark>` tags are the only markup that survives. Bounded by the server binding `127.0.0.1` and being read-only, but the script ran same-origin with the wiki and could read every note the viewer could reach. Link and image URLs in the renderer also got a scheme allowlist, so a note body can no longer render a `javascript:` or `data:` link.
+- **`install --global` deleted `~/.claude/skills/research/` on a name match alone (#73, reported by @letospace).** `research` is an ordinary word and an obvious name for a hand-written personal skill, and `--global` puts the prune in a user-level directory shared across every project, so anyone with one lost it silently on their first upgrade. A marker file cannot fix this — the directories being pruned predate any marker we could have written — so the check is on the content we shipped into them: every `SKILL.md` this project has ever installed names the project. Anything else is left alone and reported in the install output, which previously listed what it installed but never what it deleted.
+
+### Contributed fixes
+
+- **Browser setup installs (and pre-checks) patchright's chromium when
+  patchright is present.** The stealth adapter (`UndetectedAdapter`) launches
+  patchright's pinned chromium, which lives in a separate registry from plain
+  playwright's, so `playwright install chromium` alone produces a machine
+  where every preflight passes and every browser fetch dies at launch with a
+  missing-executable error, while the PDF lane keeps working. Both setup
+  surfaces (`hyperresearch setup` and `install`) now check against the stack
+  the provider actually launches and prefer `python -m patchright install
+  chromium`, falling back to plain playwright for non-stealth installs; the
+  manual-install hint names both commands. Thanks @fduple (#67).
+- **Collision note ids survive the frontmatter re-parse** (an orphan-note
+  foreign-key crash). `write_note()` appended `-2` to a slug already sitting on
+  `slugify()`'s 80-char cap, producing an 82-char id whose next parse
+  re-slugified it back under the cap: the suffix fell off, the second note
+  collapsed into the base id, sync refused the duplicate, and the `sources`
+  insert died with `IntegrityError: FOREIGN KEY constraint failed`, leaving the
+  `.md` file on disk but permanently unregistered. Collision ids are now built
+  by trimming the base so base+suffix fits both the 80-char and 200-byte caps,
+  then normalized once, so the disk id equals its own re-parse; short-title
+  collisions keep their existing `-2` ids, so existing vaults do not shift.
+  Thanks @fduple (#66).
+- **The `mcp` extra is upper-bounded to `<2`.** mcp 2.0 removed `mcp.server.fastmcp`, which every tool in `hyperresearch/mcp/server.py` is built on, so an unbounded `pip install hyperresearch[mcp]` resolved 2.x and `hyperresearch mcp` died on import while reporting the extra as missing. All 13 tools verified against 1.29.0.
+- **Test isolation for the process-global render context.** `install_hooks()` sets a module-level profile context that direct `_install_*` calls reuse, so a test installing with a profile overlay leaked its numbers into every later install in the same process. Confirmed outside the suite too: a clean vault rendered another vault's `source_min`. Thanks @fduple (#65).
+
 ## [0.9.1] - 2026-07-25
 
 ### Four silent-failure leaks closed (tags, FTS syntax, batch PDFs, cache-busting date)
