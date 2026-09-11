@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **The PreToolUse reminder now reaches the model (#94).** The installed hook wrote its reminder to stderr and exited 0, and for PreToolUse that channel is discarded — so the "check the research base before searching the web" nudge shipped since 0.x had never once been delivered. It is emitted as `hookSpecificOutput.additionalContext` now, which is the documented injection channel. The matcher is narrowed to `WebSearch|WebFetch`: on `Glob` and `Grep` the advice is noise, and delivering it there for the first time would have made every local vault operation pay for a reminder about the web.
+
 ### Scholarly discovery: eight sources through one client layer
 
 Academic discovery used to be four URL templates rendered into the agent's instructions by `core/agent_docs.py`, which the model was trusted to assemble and call by hand. No retry, no rate limiting, no dedup, no offline tests — and one of those templates shipped `mailto=research@example.com`, a shared placeholder on every install, which is exactly the anti-pattern the open-access resolver refuses to commit for Unpaywall. It is now a real package.
