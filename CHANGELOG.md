@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **The registered PreToolUse hook command quotes the script path.** `install` wrote `node <path>` into `.claude/settings.json` unquoted, and a hook command runs through a shell — so a project directory containing a space split the path there and node was handed a truncated script, making the hook exit 1 on every `Glob`, `Grep`, `WebSearch` and `WebFetch` call. Paths with spaces are ordinary (a Windows user directory, anything under `My Documents`). Installs written before this change keep the old entry, because the installer treats any existing hyperresearch hook as already installed; removing that entry and re-running `install` picks up the fix.
+
 ## [0.10.0] - 2026-08-01
 
 ### Open-access full-text recovery (Unpaywall + Europe PMC)
