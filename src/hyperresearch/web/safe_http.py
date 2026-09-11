@@ -87,9 +87,18 @@ class SafeResponse:
 # Carrier-grade NAT (RFC 6598). Not covered by any ipaddress is_* property
 # (checked through 3.11.9), yet never a public destination.
 _CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+# 6to4 (RFC 3056): a 2002:AABB:CCDD::/48 prefix embeds the IPv4 address
+# A.B.C.D, so 2002:7f00:1:: is loopback wearing an IPv6 coat. The transport
+# is deprecated and rarely routed, but the ipaddress module does not flag it
+# and the embedded address is what matters. IPv4-mapped (::ffff:a.b.c.d) is
+# already caught because ipaddress unwraps it for the is_* properties.
+_6TO4_NET = ipaddress.ip_network("2002::/16")
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if ip.version == 6 and ip in _6TO4_NET:
+        packed = int(ip) >> 80 & 0xFFFFFFFF
+        return _is_blocked_ip(ipaddress.IPv4Address(packed))
     return (
         ip.is_private
         or ip.is_loopback

@@ -288,6 +288,34 @@ def test_check_url_allows_cgnat_neighbors(url):
 
 
 # ---------------------------------------------------------------------------
+# 6to4 (RFC 3056) — 2002:AABB:CCDD::/48 embeds the IPv4 address A.B.C.D, so
+# the check must decode it; ipaddress does not flag the prefix on its own
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://[2002:7f00:1::]/",        # 127.0.0.1
+        "http://[2002:c0a8:101::]/",      # 192.168.1.1
+        "http://[2002:a9fe:a9fe::]/",     # 169.254.169.254, cloud metadata
+        "http://[2002:6440:1::]/",        # 100.64.0.1, CGNAT
+    ],
+)
+def test_check_url_rejects_6to4_wrapping_private_ipv4(url):
+    """A deprecated transport, but the embedded address is what would be
+    reached, and a literal in the URL skips DNS entirely."""
+    with pytest.raises(SafeHTTPError, match="non-public address"):
+        check_url(url)
+
+
+def test_check_url_allows_6to4_wrapping_public_ipv4():
+    """2002:0808:0808:: embeds 8.8.8.8 and stays fetchable — the block is on
+    the embedded address, not the prefix."""
+    check_url("http://[2002:808:808::]/")
+
+
+# ---------------------------------------------------------------------------
 # allow_private_hosts — the [fetch] escape hatch for intranet mirrors
 # ---------------------------------------------------------------------------
 
