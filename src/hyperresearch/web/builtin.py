@@ -225,18 +225,19 @@ class BuiltinProvider:
             # Preserve code as markdown BEFORE get_text() flattens the markup
             # (module comment has the why). <pre> first, so nested <code>
             # inside it is consumed with it; then the remaining inline <code>.
+            # Rewrite each element's contents in place: replace_with() and
+            # decompose() look the element up in its parent's child list, which
+            # is quadratic on a page with thousands of sibling <code> tags.
             for pre in soup.find_all("pre"):
                 code_text = pre.get_text()
+                pre.clear()
                 if code_text.strip():
-                    pre.replace_with(NavigableString(_fenced(code_text)))
-                else:
-                    pre.decompose()
+                    pre.append(NavigableString(_fenced(code_text)))
             for code in soup.find_all("code"):
                 code_text = code.get_text()
+                code.clear()
                 if code_text.strip():
-                    code.replace_with(NavigableString(_inline_code(code_text)))
-                else:
-                    code.decompose()
+                    code.append(NavigableString(_inline_code(code_text)))
             text = soup.get_text(separator="\n", strip=True)
             # Collapse blank lines
             text = re.sub(r"\n{3,}", "\n\n", text)
