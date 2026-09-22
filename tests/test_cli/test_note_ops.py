@@ -150,6 +150,35 @@ def test_note_mv_refuses_to_overwrite_an_existing_file(vault_with_notes, dest):
     assert _indexed_path("beta-note") == "research/notes/beta-note.md"
 
 
+
+def test_note_mv_refuses_the_index_dir(vault_with_notes):
+    # build_all() wipes research/index/*.md on every repair, so a note moved
+    # there would be deleted the next time the index regenerates.
+    result = runner.invoke(
+        app, ["note", "mv", "beta-note", "research/index/beta-note.md", "--json"]
+    )
+    assert result.exit_code == 1, result.output
+    assert json.loads(result.output)["error_code"] == "OUTSIDE_SYNCED_TREE"
+    assert _indexed_path("beta-note") == "research/notes/beta-note.md"
+
+
+def test_note_mv_allows_a_case_only_rename(vault_with_notes):
+    result = runner.invoke(
+        app, ["note", "mv", "beta-note", "research/notes/Beta-Note.md", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"]["new_path"] == "research/notes/Beta-Note.md"
+    names = [f.name for f in (vault_with_notes / "research" / "notes").iterdir()]
+    assert "Beta-Note.md" in names
+    assert "beta-note.md" not in names
+    assert _indexed_path("beta-note") == "research/notes/Beta-Note.md"
+
+
+def test_note_mv_does_not_double_an_uppercase_suffix(vault_with_notes):
+    result = runner.invoke(app, ["note", "mv", "beta-note", "Renamed.MD", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"]["new_path"] == "research/notes/Renamed.MD"
+
 def test_note_show_raw(vault_with_notes):
     result = runner.invoke(app, ["note", "show", "alpha-note", "--raw"])
     assert result.exit_code == 0
