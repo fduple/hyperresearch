@@ -738,14 +738,19 @@ def note_rm(
     assets_dir = assets_root / note_id
     own_files: list[Path] = []
     others: set[tuple] = set()
+    # Where other notes' rows point, as spelled: a symlink a row names is
+    # that note's, whatever it points at.
+    other_paths: set[Path] = set()
     for r in vault.db.execute("SELECT note_id, filename FROM assets"):
         if r["note_id"] == note_id:
             own_files.append(Path(r["filename"]))
         else:
+            other_paths.add(_located(Path(r["filename"])))
             ident = _file_identity(Path(r["filename"]))
             if ident is not None:
                 others.add(ident)
     seen: set[tuple] = set()
+    seen_links: set[Path] = set()
     assets_not_removed: list[str] = []
     # The directories a removal may have emptied.
     dirs: set[Path] = set()
@@ -757,7 +762,30 @@ def note_rm(
         except ValueError:
             return str(path)
 
+    def _remove_link(path: Path) -> None:
+        # A symlink is removed as itself, dangling or not: unlinking it never
+        # touches its target, wherever that is. Only a link that sits below
+        # research/assets/ goes, and not one another note's row names.
+        where = _located(path)
+        if where in other_paths or where in seen_links:
+            return
+        seen_links.add(where)
+        if not where.parent.is_relative_to(assets_root.resolve()):
+            assets_not_removed.append(f"{path}: outside research/assets/, left in place")
+            return
+        label = _label(path)
+        try:
+            path.unlink()
+        except OSError as exc:
+            assets_not_removed.append(f"{label}: {exc.strerror or exc}")
+            return
+        removed_assets.append(label)
+        dirs.add(path.parent)
+
     def _remove_file(path: Path) -> None:
+        if path.is_symlink():
+            _remove_link(path)
+            return
         ident = _file_identity(path)
         if ident is None or ident in others or ident in seen:
             return

@@ -228,3 +228,42 @@ def test_note_rm_reports_a_file_it_cannot_remove_and_finishes_the_delete(vault_w
     vault = Vault(vault_with_notes)
     assert vault.db.execute("SELECT COUNT(*) FROM notes WHERE id = 'alpha-note'").fetchone()[0] == 0
     vault.close()
+
+
+def test_note_rm_removes_symlinks_in_the_notes_directory_not_their_targets(
+    vault_with_notes, tmp_path
+):
+    """A dangling link and a link to a file outside the vault, in the note's
+    own directory: each link goes, as `shutil.rmtree` removed it, the target
+    stays, and the emptied directory goes with them."""
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"keep")
+    assets_dir = vault_with_notes / "research" / "assets" / "alpha-note"
+    assets_dir.mkdir(parents=True)
+    _symlink(assets_dir / "dangling.png", tmp_path / "missing.png")
+    _symlink(assets_dir / "outside.png", outside)
+
+    data = _rm("alpha-note")
+
+    assert sorted(data["removed_assets"]) == [
+        "research/assets/alpha-note/dangling.png",
+        "research/assets/alpha-note/outside.png",
+    ]
+    assert "assets_not_removed" not in data
+    assert outside.read_bytes() == b"keep"
+    assert not assets_dir.exists()
+
+
+def test_note_rm_keeps_a_symlink_another_notes_row_names(vault_with_notes, tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"keep")
+    assets_dir = vault_with_notes / "research" / "assets" / "alpha-note"
+    assets_dir.mkdir(parents=True)
+    link = assets_dir / "shared.png"
+    _symlink(link, outside)
+    _row(vault_with_notes, "beta-note", link)
+
+    data = _rm("alpha-note")
+
+    assert "removed_assets" not in data
+    assert link.is_symlink()
