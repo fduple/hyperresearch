@@ -610,3 +610,17 @@ def test_allowlist_bracketed_ipv6_entry_admits_the_literal():
     """A bracketed IPv6 entry (URL notation) parses as the address itself
     instead of becoming a hostname that never matches."""
     check_url("http://[::1]/", allow_private_hosts=("[::1]",))
+
+
+@pytest.mark.parametrize("url", [" http://8.8.8.8/", "\t http://8.8.8.8/", "\x00http://8.8.8.8/"])
+def test_check_url_strips_leading_whitespace_as_urlparse_does(url):
+    """urlparse drops leading C0 controls and spaces; httpx alone reads the
+    URL as relative and finds no host. The gate checks the same host both
+    see instead of looking up an empty name."""
+    check_url(url)
+
+
+@pytest.mark.parametrize("url", [" http://127.0.0.1/", "\x0bhttp://10.0.0.1/"])
+def test_check_url_leading_whitespace_still_ip_gated(url):
+    with pytest.raises(SafeHTTPError, match="non-public address"):
+        check_url(url)

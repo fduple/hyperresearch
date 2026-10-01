@@ -220,6 +220,11 @@ def _parse_allowlist(
     return frozenset(hostnames), networks
 
 
+# What urlparse strips from the start of a URL (urllib.parse's
+# _WHATWG_C0_CONTROL_OR_SPACE, a private name).
+_C0_CONTROL_OR_SPACE = "".join(chr(c) for c in range(0x20)) + " "
+
+
 def check_url(url: str, allow_private_hosts: tuple[str, ...] = ()) -> None:
     """Validate the URL is safe to fetch. Raises :class:`SafeHTTPError`.
 
@@ -251,13 +256,20 @@ def check_url(url: str, allow_private_hosts: tuple[str, ...] = ()) -> None:
     # getaddrinfo encodes a non-ASCII name with the stdlib "idna" codec (IDNA
     # 2003), which maps some characters away: "straße" would be looked up as
     # "strasse", a different name from the "xn--strae-oqa" httpx connects to.
+    #
+    # urlparse drops leading C0 controls and spaces (the WHATWG rule); httpx
+    # reads " http://host/" as a relative URL with no host. Strip the same
+    # characters so both parsers see one host, and refuse a URL httpx still
+    # finds no host in rather than look up an empty name.
     try:
-        hostname = httpx.URL(url).raw_host.decode("ascii")
+        hostname = httpx.URL(url.lstrip(_C0_CONTROL_OR_SPACE)).raw_host.decode("ascii")
     except (httpx.InvalidURL, UnicodeError) as exc:
         # UnicodeError: httpx cannot encode a lone surrogate in the path,
         # query or fragment, which is what a non-UTF-8 byte in a command-line
         # argument becomes.
         raise SafeHTTPError(f"refusing unparseable URL {url!r}: {exc}") from exc
+    if not hostname:
+        raise SafeHTTPError(f"refusing URL with no hostname: {url!r}")
     allowed_hosts, allowed_nets = _parse_allowlist(allow_private_hosts)
     if _normalize_hostname(hostname) in allowed_hosts:
         return
