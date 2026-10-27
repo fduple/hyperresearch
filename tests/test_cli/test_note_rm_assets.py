@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -267,3 +268,26 @@ def test_note_rm_keeps_a_symlink_another_notes_row_names(vault_with_notes, tmp_p
 
     assert "removed_assets" not in data
     assert link.is_symlink()
+
+
+def test_note_rm_after_an_id_swap_keeps_the_other_notes_files(vault_with_notes):
+    """End to end through sync: alpha-note's id is edited to alpha-2, then
+    beta-note's to the freed alpha-note. Its files stay in
+    research/assets/beta-note/, and research/assets/alpha-note/ now holds
+    alpha-2's. Removing the directory named after the id would delete
+    alpha-2's file and leave the removed note's own."""
+    notes = vault_with_notes / "research" / "notes"
+    alpha_shot = _asset(vault_with_notes, "alpha-note", "alpha-note/screenshot.png")
+    beta_shot = _asset(vault_with_notes, "beta-note", "beta-note/screenshot.png")
+    for name, new_id in (("alpha-note.md", "alpha-2"), ("beta-note.md", "alpha-note")):
+        path = notes / name
+        text = path.read_text(encoding="utf-8")
+        path.write_text(re.sub(r"(?m)^id: .*$", f"id: {new_id}", text, count=1), encoding="utf-8")
+        result = runner.invoke(app, ["sync", "--json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["data"]["errors"] == []
+
+    _rm("alpha-note")
+
+    assert alpha_shot.exists()
+    assert not beta_shot.exists()
