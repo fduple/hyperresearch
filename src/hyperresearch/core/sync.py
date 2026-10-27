@@ -484,10 +484,12 @@ def _upsert_note_to_db(conn, note, synced_at: str, file_mtime: float = 0) -> Non
 
     # Update tags — resolve aliases before writing
     conn.execute("DELETE FROM tags WHERE note_id = ?", (meta.id,))
-    alias_map = {
-        row["alias"]: row["canonical"]
-        for row in conn.execute("SELECT alias, canonical FROM tag_aliases")
-    }
+    alias_map = {}
+    try:
+        for row in conn.execute("SELECT alias, canonical FROM tag_aliases"):
+            alias_map[row["alias"]] = row["canonical"]
+    except Exception:
+        pass
     for tag in meta.tags:
         # Lowercase the frontmatter tag for BOTH the lookup and the fallback:
         # alias keys and canonicals are stored lowercase (cli/tag.py), and

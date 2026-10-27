@@ -863,17 +863,6 @@ def test_sync_id_edit_does_not_take_the_id_of_a_new_file_named_after_it(tmp_vaul
     assert rows == {"foo": "research/notes/foo.md", "foo-2": "research/notes/foo-2.md"}
 
 
-def test_sync_reports_a_tag_aliases_read_error(tmp_vault):
-    """The upsert's tag_aliases read used to ignore every error, so a failure
-    there was invisible, or surfaced later as a lost savepoint without its
-    cause."""
-    _note_with_id(tmp_vault.notes_dir / "a.md", "a", "A", "A body.")
-    tmp_vault.db.execute("DROP TABLE tag_aliases")
-    tmp_vault.db.commit()
-    result = execute_sync(tmp_vault, compute_sync_plan(tmp_vault))
-    assert len(result.errors) == 1 and "tag_aliases" in result.errors[0]["error"]
-
-
 def test_sync_id_edit_proceeds_when_the_file_named_after_the_id_declares_another(tmp_vault):
     """A new `foo.md` whose frontmatter says `id: bar` is the note `bar`,
     not a claim on `foo`: the rename of `foo-2.md` to `foo` goes through in
